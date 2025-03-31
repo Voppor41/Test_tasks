@@ -1,20 +1,29 @@
+import httpx
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
-from ..schemas import TronRequestCreate, TronRequestResponse
 from ..crud import create_tron_requests, get_tron_requests
 from ..database import get_db
-from app.tron_client import client # Убедись, что у тебя есть этот клиент
-print(client)
+from ..schemas import TronRequestCreate, TronRequestResponse
+from ..tron_client import client
 
 router = APIRouter()
 
-@router.post("/tron/", response_model=TronRequestResponse)
-def fetch_tron_data(request: TronRequestCreate, db: Session = Depends(get_db)):
+
+async def fetch_tron_data_async(address: str):
+    async with httpx.AsyncClient() as client:
+        account = await client.get(f"https://api.tronlink.org/account/{address}")
+        resources = await client.get(f"https://api.tronlink.org/resources/{address}")
+
+    return account.json(), resources.json()
+
+@router.post("/tron/")
+async def fetch_tron_data(request: TronRequestCreate, db: Session = Depends(get_db)):
     try:
-        account = client.get_account(request.address)
+        account, resources = await fetch_tron_data_async(request.address)
+
         balance = account.get("balance", 0) / 1_000_000
-        bandwidth = client.get_account_resource(request.address)["freeNetUsed"]
-        energy = client.get_account_resource(request.address)["energyUsed"]
+        bandwidth = resources.get("freeNetUsed", 0)
+        energy = resources.get("energyUsed", 0)
 
         db_entry = create_tron_requests(db, request.address)
         return {
@@ -29,5 +38,5 @@ def fetch_tron_data(request: TronRequestCreate, db: Session = Depends(get_db)):
         raise HTTPException(status_code=400, detail="Invalid address")
 
 @router.get("/tron/history/", response_model=list[TronRequestResponse])
-def get_history(skip: int = 0, limit: int = 10, db: Session = Depends(get_db)):
+async def get_history(skip: int = 0, limit: int = 10, db: Session = Depends(get_db)):
     return get_tron_requests(db, skip, limit)
